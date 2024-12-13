@@ -3,46 +3,46 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq.Expressions;
 
-public class DynamicClass
-{
-    public string a { get; set; }
-    public int b { get; set; }
-    public bool c { get; set; }
-    public DateTime d { get; set; }
-}
-
 public class Parser
 {
     private static readonly HashSet<string> Operators = new HashSet<string> { "and", "or", "==", ">", "!", "<" };
-
+    
     public static Node Parse(string expression)
     {
+        const int MaxConditions = 10;
+        const int MaxDepth = 5;
         Stack<Node> nodes = new Stack<Node>();
         Stack<string> operators = new Stack<string>();
+
+        var expressionsFound = CountExpressions(expression);
+        if (expressionsFound.Count > MaxConditions)
+        {
+            throw new InvalidOperationException($"Expression exceeds the maximum limit of {MaxConditions} conditions.");
+        }
+
+        Console.WriteLine("Expressions found:");
+        foreach (var exp in expressionsFound)
+        {
+            Console.WriteLine(exp);
+        }
 
         string[] tokens = expression.Replace("(", "( ").Replace(")", " )").Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         foreach (var token in tokens)
         {
-            if (token == "(")
+            if (token == "(" || token == ")")
             {
-                operators.Push(token);
+                // Parentheses don't count towards the condition limit.
+                continue;
             }
-            else if (Operators.Contains(token))
+
+            if (Operators.Contains(token))
             {
                 while (operators.Count > 0 && Precedence(operators.Peek()) >= Precedence(token))
                 {
-                    nodes.Push(CreateNode(operators.Pop(), nodes));
+                    nodes.Push(CreateNode(operators.Pop(), nodes, MaxDepth));
                 }
                 operators.Push(token);
-            }
-            else if (token == ")")
-            {
-                while (operators.Peek() != "(")
-                {
-                    nodes.Push(CreateNode(operators.Pop(), nodes));
-                }
-                operators.Pop();
             }
             else
             {
@@ -50,6 +50,7 @@ public class Parser
                 {
                     Node unaryNode = new Node("!");
                     unaryNode.Right = new Node(token.Substring(1));
+                    CheckDepth(unaryNode, MaxDepth);
                     nodes.Push(unaryNode);
                 }
                 else
@@ -61,17 +62,83 @@ public class Parser
 
         while (operators.Count > 0)
         {
-            nodes.Push(CreateNode(operators.Pop(), nodes));
+            nodes.Push(CreateNode(operators.Pop(), nodes, MaxDepth));
         }
 
         return nodes.Pop();
     }
 
-    private static Node CreateNode(string op, Stack<Node> nodes)
+    public static List<string> CountExpressions(string expression)
+    {
+        List<string> expressions = new List<string>();
+        string[] tokens = expression.Replace("(", "( ").Replace(")", " )").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        bool inExpression = false;
+        string currentExpression = "";
+
+        foreach (var token in tokens)
+        {
+            if (token == "(" || token == ")")
+            {
+                // Skip parentheses.
+                continue;
+            }
+
+            if (Operators.Contains(token))
+            {
+                if (inExpression)
+                {
+                    expressions.Add(currentExpression.Trim());
+                    currentExpression = "";
+                }
+                inExpression = true;
+            }
+
+            currentExpression += token + " ";
+
+            // If token is a standalone operator or boolean literal, add as an individual expression.
+            if (token == "true" || token == "false")
+            {
+                expressions.Add(currentExpression.Trim());
+                currentExpression = "";
+            }
+        }
+
+        // Add the last expression if it wasn't added already.
+        if (!string.IsNullOrEmpty(currentExpression.Trim()))
+        {
+            expressions.Add(currentExpression.Trim());
+        }
+
+        // Remove non-logical expressions like single identifiers.
+        expressions.RemoveAll(exp => Operators.Contains(exp.Trim()));
+
+        return expressions;
+    }
+
+    private static void CheckDepth(Node node, int maxDepth, int currentDepth = 0)
+    {
+        if (currentDepth > maxDepth)
+        {
+            throw new InvalidOperationException($"Expression exceeds the maximum depth of {maxDepth}.");
+        }
+
+        if (node.Left != null)
+        {
+            CheckDepth(node.Left, maxDepth, currentDepth + 1);
+        }
+        if (node.Right != null)
+        {
+            CheckDepth(node.Right, maxDepth, currentDepth + 1);
+        }
+    }
+
+    private static Node CreateNode(string op, Stack<Node> nodes, int maxDepth)
     {
         Node right = nodes.Pop();
         Node left = nodes.Count > 0 ? nodes.Pop() : null;
-        return new Node(op) { Left = left, Right = right };
+        Node parent = new Node(op) { Left = left, Right = right };
+        CheckDepth(parent, maxDepth);
+        return parent;
     }
 
     private static int Precedence(string op)
@@ -171,14 +238,37 @@ public class Program
 {
     public static void Main()
     {
-        string expression = "( d > '2023-01-01' and (( b > 3 or !c ) ) and (c or a == 'hoang'))";
-        Node root = Parser.Parse(expression);
-        Parser.PrintTree(root);
+        try
+        {
+            string expression = "( d > '2023-01-01' and (( b > 3 or !c ) ) and (c or a == 'hoang'))";
+            var expressionsFound = Parser.CountExpressions(expression);
+            Console.WriteLine($"Expression count: {expressionsFound.Count}");
+            Console.WriteLine("Expressions found:");
+            foreach (var exp in expressionsFound)
+            {
+                Console.WriteLine(exp);
+            }
 
-        var param = Expression.Parameter(typeof(DynamicClass), "x");
-        var lambdaExpression = Parser.ToLambdaExpression(root, param);
+            Node root = Parser.Parse(expression);
+            Parser.PrintTree(root);
 
-        var lambda = Expression.Lambda<Func<DynamicClass, bool>>(lambdaExpression, param);
-        Console.WriteLine("Lambda Expression: " + lambda);
+            var param = Expression.Parameter(typeof(DynamicClass), "x");
+            var lambdaExpression = Parser.ToLambdaExpression(root, param);
+
+            var lambda = Expression.Lambda<Func<DynamicClass, bool>>(lambdaExpression, param);
+            Console.WriteLine("Lambda Expression: " + lambda);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine(ex.Message);
+        }
     }
+}
+
+public class DynamicClass
+{
+    public string a { get; set; }
+    public int b { get; set; }
+    public bool c { get; set; }
+    public DateTime d { get; set; }
 }
